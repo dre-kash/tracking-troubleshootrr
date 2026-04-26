@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { SYSTEM_PROMPT } from "@/lib/systemPrompt";
 
 function errorResponse(message: string, status: number) {
@@ -6,48 +6,50 @@ function errorResponse(message: string, status: number) {
 }
 
 export async function POST(req: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.GEMINI_API_KEY) {
     return errorResponse(
-      "ANTHROPIC_API_KEY is not set. Add it to your environment variables.",
+      "GEMINI_API_KEY is not set. Add it to your environment variables.",
       400
     );
   }
 
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.0-flash",
+    systemInstruction: SYSTEM_PROMPT,
+  });
 
-  let messages: unknown;
+  let messages: { role: string; content: string }[];
   try {
     ({ messages } = await req.json());
   } catch {
     return errorResponse("Invalid request body.", 400);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let stream: any;
+  // Convert to Gemini format: role is "user" | "model", content goes in parts
+  const history = messages.slice(0, -1).map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+  const lastMessage = messages[messages.length - 1];
+
+  const chat = model.startChat({ history });
+
+  let streamResult: Awaited<ReturnType<typeof chat.sendMessageStream>>;
   try {
-    stream = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: messages as any,
-      stream: true,
-    });
+    streamResult = await chat.sendMessageStream(lastMessage.content);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error from Anthropic API.";
+    const message =
+      err instanceof Error ? err.message : "Unknown error from Gemini API.";
     return errorResponse(message, 502);
   }
 
   const encoder = new TextEncoder();
   const readable = new ReadableStream({
     async start(controller) {
-      for await (const event of stream) {
-        if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
-        ) {
-          controller.enqueue(encoder.encode(event.delta.text));
-        }
+      for await (const chunk of streamResult.stream) {
+        const text = chunk.text();
+        if (text) controller.enqueue(encoder.encode(text));
       }
       controller.close();
     },
@@ -61,3 +63,4 @@ export async function POST(req: Request) {
     },
   });
 }
+
