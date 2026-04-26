@@ -71,7 +71,11 @@ export default function ChatInterface() {
         }),
       });
 
-      if (!res.ok || !res.body) throw new Error("Request failed");
+      if (!res.ok) {
+        const { error } = await res.json().catch(() => ({ error: "Request failed." }));
+        throw new Error(error ?? "Request failed.");
+      }
+      if (!res.body) throw new Error("No response body.");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -89,13 +93,13 @@ export default function ChatInterface() {
         { role: "assistant", content: accumulated },
       ]);
       setStreamingContent("");
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong. Please try again.";
       setMessages([
         ...newMessages,
         {
           role: "assistant",
-          content:
-            "Something went wrong connecting to the AI. Please check your API key and try again.",
+          content: `**Error:** ${message}`,
         },
       ]);
       setStreamingContent("");
